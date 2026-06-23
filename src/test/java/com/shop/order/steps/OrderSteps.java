@@ -48,7 +48,7 @@ public class OrderSteps {
 
     // ---- order creation ----
 
-    @When("I POST /orders for {int} units of {string} with Idempotency-Key {string}")
+    @When("I POST \\/orders for {int} units of {string} with Idempotency-Key {string}")
     public void postOrder(int qty, String productId, String key) {
         Resp r = post(key, productId, qty);
         lastStatus = r.status;
@@ -63,7 +63,7 @@ public class OrderSteps {
         keyToId.put(key, currentOrderId);
     }
 
-    @When("I POST /orders again with Idempotency-Key {string}")
+    @When("I POST \\/orders again with Idempotency-Key {string}")
     public void postAgain(String key) {
         Resp r = post(key, "P1", 1);
         lastStatus = r.status;
@@ -145,7 +145,7 @@ public class OrderSteps {
         service.cancelTimedOutSagas();
     }
 
-    @When("I GET /orders/{word}")
+    @When("I GET \\/orders\\/{word}")
     public void getOrder(String name) {
         currentOrderId = resolve(name);
         lastStatus = get("/orders/" + currentOrderId).status;
