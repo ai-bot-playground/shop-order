@@ -1,0 +1,12 @@
+spring:
+  datasource:
+    url: jdbc:tc:postgresql:17-alpine:///orderdb
+    driver-class-name: org.testcontainers.jdbc.ContainerDatabaseDriver
+  kafka:
+    listener:
+      auto-startup: false
+shop:
+  outbox:
+    enabled: false                 # assert the outbox table directly
+  saga:
+    timeout-scanner-enabled: false # tests invoke the scanner explicitly
