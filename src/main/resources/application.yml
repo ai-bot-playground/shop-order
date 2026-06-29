@@ -1,6 +1,33 @@
 spring:
   application:
     name: shop-order
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+  flyway:
+    enabled: true
+  kafka:
+    consumer:
+      group-id: ${SPRING_KAFKA_CONSUMER_GROUP_ID:shop-order}
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+
+shop:
+  order:
+    order-events-topic: order-events
+    inventory-events-topic: inventory-events
+    payment-events-topic: payment-events
+    catalog-uri: ${CATALOG_SERVICE_URI:http://shop-catalog:8080}
+    payment-timeout-seconds: ${SAGA_PAYMENT_TIMEOUT_SECONDS:30}
+  outbox:
+    enabled: true
+    poll-ms: 1000
+
 management:
   endpoints:
     web:
