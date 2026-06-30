@@ -54,20 +54,20 @@ public class OrderService {
     }
 
     @Transactional
-    public Order createOrder(String idempotencyKey, String productId, long quantity) {
+    public Order createOrder(String idempotencyKey, String productId, long quantity, String userToken) {
         if (idempotencyKey != null && !idempotencyKey.isBlank()) {
             Optional<Order> existing = orders.findByIdempotencyKey(idempotencyKey);
             if (existing.isPresent()) {
                 return existing.get();
             }
         }
-        BigDecimal price = catalog.priceOf(productId);
+        BigDecimal price = catalog.priceOf(productId, userToken);
         BigDecimal amount = price.multiply(BigDecimal.valueOf(quantity));
         String orderId = UUID.randomUUID().toString();
         Order order = new Order(orderId, idempotencyKey, productId, quantity, amount, "PENDING");
         orders.save(order);
         emit(orderTopic, "OrderCreated", orderId,
-                Map.of("orderId", orderId, "productId", productId, "quantity", quantity));
+                Map.of("orderId", orderId, "productId", productId, "quantity", quantity, "amount", amount));
         return order;
     }
 

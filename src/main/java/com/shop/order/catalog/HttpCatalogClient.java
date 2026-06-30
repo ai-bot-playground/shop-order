@@ -10,6 +10,8 @@ import java.util.Map;
 @Component
 public class HttpCatalogClient implements CatalogClient {
 
+    private static final String SESSION_HEADER = "X-Session-Id";
+
     private final RestClient rest;
 
     public HttpCatalogClient(@Value("${shop.order.catalog-uri:http://shop-catalog:8080}") String catalogUri) {
@@ -17,11 +19,15 @@ public class HttpCatalogClient implements CatalogClient {
     }
 
     @Override
-    public BigDecimal priceOf(String productId) {
+    public BigDecimal priceOf(String productId, String sessionId) {
         // Deserialize into a Map rather than a Jackson tree type: the Boot 4
         // RestClient uses Jackson 3 and cannot construct a Jackson 2 JsonNode,
         // and a Map keeps us independent of either Jackson version.
-        Map<?, ?> body = rest.get().uri("/products/{id}", productId).retrieve().body(Map.class);
+        Map<?, ?> body = rest.get()
+                .uri("/products/{id}", productId)
+                .header(SESSION_HEADER, sessionId == null ? "" : sessionId)
+                .retrieve()
+                .body(Map.class);
         Object price = (body == null) ? null : body.get("price");
         if (price == null) {
             throw new IllegalStateException("No price for product " + productId);

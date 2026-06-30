@@ -29,8 +29,9 @@ public class OrderController {
     @PostMapping
     public ResponseEntity<Map<String, Object>> create(
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+            @RequestHeader(value = "X-User-Session", required = false) String userSession,
             @RequestBody CreateOrderRequest req) {
-        Order order = service.createOrder(idempotencyKey, req.productId(), req.quantity());
+        Order order = service.createOrder(idempotencyKey, req.productId(), req.quantity(), userSession);
         return ResponseEntity.accepted().body(Map.of("orderId", order.getId(), "status", order.getStatus()));
     }
 
