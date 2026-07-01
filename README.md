@@ -1,91 +1,75 @@
 # shop-order
 
-Orkiestrator sagi — dyryguje całą rozproszoną transakcją zakupu, w tym
-kompensacją przy niepowodzeniu. Standalone repo z własnym `Dockerfile` i kodem.
-Stack: Spring Boot + JPA (Postgres) + Spring Kafka.
+Saga orchestrator for the shop platform. Drives the distributed order state machine and compensates on failure.  
+Stack: **Spring Boot 4 / Java 25 · PostgreSQL · Kafka · Flyway**.
 
-## Maszyna stanów zamówienia
+## Order state machine
 
 ```
 PENDING ──StockReserved──> RESERVED ──PaymentCompleted──> CONFIRMED
-   │                          │
-   │ StockReservationFailed   │ PaymentFailed
-   ▼                          ▼
-REJECTED                   CANCELLED  (+ emisja ReleaseStock)
+   │                           │
+   │  StockReservationFailed   │  PaymentFailed / timeout
+   ▼                           ▼
+REJECTED                    CANCELLED  (+ ReleaseStock emitted)
 ```
 
-Stan i krok sagi zapisywane w bazie (`saga_state`), by po restarcie wznowić.
+## REST API
 
-## API do zaimplementowania
+| Method | Path           | Notes                                                   |
+|--------|----------------|---------------------------------------------------------|
+| POST   | `/orders`      | body: `{productId, quantity}`; optional `Idempotency-Key` header |
+| GET    | `/orders/{id}` | returns `{orderId, status}`                             |
 
-| Metoda | Ścieżka        | Uwagi                                       |
-|--------|----------------|---------------------------------------------|
-| POST   | `/orders`      | nagłówek `Idempotency-Key` wymagany         |
-| GET    | `/orders/{id}` | status (shop-ui odpytuje / SSE)             |
+`Idempotency-Key` is optional. When provided, a duplicate request returns the existing order instead of creating a new one.
 
-`Idempotency-Key` jako `UNIQUE` w `orders` — ponowione żądanie zwraca istniejące
-zamówienie zamiast tworzyć duplikat.
+## Kafka topics
 
-## Zdarzenia Kafki
+| Direction | Topic              | Event types                                               |
+|-----------|--------------------|-----------------------------------------------------------|
+| Publishes | `order-events`     | `OrderCreated`, `OrderConfirmed`, `OrderCancelled`, `OrderRejected`, `ReleaseStock` |
+| Publishes | `payment-events`   | `PaymentRequested`                                        |
+| Consumes  | `inventory-events` | `StockReserved`, `StockReservationFailed`                 |
+| Consumes  | `payment-events`   | `PaymentCompleted`, `PaymentFailed`                       |
 
-Publikuje (`order-events` klucz `orderId`; `payment-events` dla żądania płatności):
-`OrderCreated`, `PaymentRequested`, `ReleaseStock`, `OrderConfirmed`,
-`OrderCancelled`, `OrderRejected`.
+Consumer group: `shop-order` (default, overridable via `SPRING_KAFKA_CONSUMER_GROUP_ID`).
 
-Konsumuje (grupa `shop-order`): `StockReserved`, `StockReservationFailed`
-(z `inventory-events`), `PaymentCompleted`, `PaymentFailed` (z `payment-events`).
+## Database schema (Flyway `V1__init.sql`)
 
-## Przepływ orkiestracji (do zaimplementowania)
+- `orders` — order state + `payment_deadline` for saga timeout
+- `outbox` — transactional outbox; polled every 1 s, publishes top 100 unpublished events
+- `processed_events` — consumer-side deduplication by `eventId`
 
-1. `POST /orders` → utwórz `PENDING`, zapisz `OrderCreated` do `outbox`.
-2. `StockReserved` → `RESERVED`, wyemituj `PaymentRequested`.
-   `StockReservationFailed` → `REJECTED` (forward recovery, **bez** kompensacji).
-3. `PaymentCompleted` → `CONFIRMED`, wyemituj `OrderConfirmed`.
-   `PaymentFailed` → `CANCELLED`, wyemituj `ReleaseStock` (kompensacja) **oraz**
-   `OrderCancelled`.
+## Configuration
 
-## Timeout sagi
-`SAGA_PAYMENT_TIMEOUT_SECONDS` — brak wyniku płatności w czasie uruchamia
-kompensację (zwolnij stock, anuluj). Realizacja przez zadanie skanujące utknięte sagi.
+| Env var                            | Default              | Description                          |
+|------------------------------------|----------------------|--------------------------------------|
+| `SPRING_DATASOURCE_URL`            | —                    | JDBC URL (PostgreSQL)                |
+| `SPRING_KAFKA_BOOTSTRAP_SERVERS`   | —                    | Kafka broker address                 |
+| `SPRING_KAFKA_CONSUMER_GROUP_ID`   | `shop-order`         | Consumer group                       |
+| `SAGA_PAYMENT_TIMEOUT_SECONDS`     | `30`                 | Payment deadline after stock reserve |
+| `CATALOG_SERVICE_URI`              | `http://shop-catalog:8080` | Upstream catalog service       |
 
-## Outbox + idempotencja
-Wszystkie zdarzenia przez `outbox`; konsumenci chronieni `processed_events`.
+## Build & run
 
-## Skalowanie
-Bezstanowy (stan sagi w bazie) → wiele instancji; partycje po `orderId` zapewniają
-kolejność zdarzeń jednego zamówienia.
+```bash
+# Build fat jar
+./gradlew bootJar
 
-## Konfiguracja (env)
-`SPRING_DATASOURCE_URL=.../order_db`, `SPRING_KAFKA_BOOTSTRAP_SERVERS=shop-kafka:9092`,
-`SPRING_KAFKA_CONSUMER_GROUP_ID=shop-order`, `SAGA_PAYMENT_TIMEOUT_SECONDS=30`.
+# Build Docker image
+docker build -t shop-order:0.0.1 .
 
-## High Level Design (ogólny workflow)
-
-Orkiestrator sagi: REST (`POST/GET /orders`) tworzy zamówienie i wystawia zdarzenia
-przez outbox; konsumuje wyniki z `inventory-events` i `payment-events` i przesuwa
-maszynę stanów, w razie porażki emitując kompensację (`ReleaseStock`).
-
-```mermaid
-flowchart LR
-    GW["gateway"] -->|"POST/GET /orders"| ORD["shop-order (saga)"]
-    ORD --> DB[("Postgres order_db: orders, saga_state, outbox")]
-    OBX["Outbox publisher"] -->|"OrderCreated/Confirmed/Cancelled/Rejected"| OE[["order-events"]]
-    OBX -->|"PaymentRequested"| PE[["payment-events"]]
-    IE[["inventory-events"]] -->|"StockReserved/Failed"| ORD
-    PE2[["payment-events"]] -->|"PaymentCompleted/Failed"| ORD
+# Run tests (Testcontainers spins up PostgreSQL automatically)
+./gradlew test
 ```
 
-## Low Level Design (diagram aktywności)
+## Kubernetes (preprod)
 
-Tworzenie zamówienia i przejścia sterowane zdarzeniami:
-
-```mermaid
-flowchart TD
-    A(["POST /orders + Idempotency-Key"]) --> B{"klucz istnieje?"}
-    B -- tak --> R(["zwróć istniejące zamówienie"])
-    B -- nie --> C["PENDING + OrderCreated -> outbox"] --> D(["202 orderId"])
-    S1(["StockReserved"]) --> T1["RESERVED + PaymentRequested"]
-    S2(["StockReservationFailed"]) --> T2["REJECTED + OrderRejected"]
-    P1(["PaymentCompleted"]) --> T3["CONFIRMED + OrderConfirmed"]
-    P2(["PaymentFailed / timeout"]) --> T4["CANCELLED + ReleaseStock + OrderCancelled"]
+```bash
+kubectl --context kind-preprod apply -f k8s/shop-order.yaml
 ```
+
+Deploys to namespace `shop` with liveness/readiness probes on `/actuator/health`.
+
+## CI
+
+Every PR triggers the cross-service preprod acceptance suite via `.github/workflows/pr-to-main.yml` (reuses `ai-bot-playground/shop-acceptance-tests/.github/workflows/gate.yml@main`).
